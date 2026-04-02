@@ -1,6 +1,6 @@
 # Paper-View
 
-论文阅读笔记，聚焦端侧 AI 系统优化、LLM 推理加速、小模型增强等方向。
+paper笔记，聚焦端侧 AI 系统优化、LLM 推理加速、小模型增强等方向。
 
 ## 目录
 
@@ -36,3 +36,4 @@
 - **端侧系统优化**：内存优化、异构计算、模型压缩
 - **小模型能力增强**：CoT、Beam Search、测试时计算
 - **LLM 推理加速**：推测解码、Continuous Batching、PagedAttention
+

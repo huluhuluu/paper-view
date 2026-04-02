@@ -1,19 +1,20 @@
 ---
-title: "论文阅读笔记"
+title: "paper笔记"
 date: 2026-04-01T15:30:00+08:00
 lastmod: 2026-04-01T15:30:00+08:00
 draft: false
-description: "端侧AI、LLM推理加速、小模型等论文阅读笔记"
+description: "端侧AI、LLM推理加速、小模型等paper笔记"
 slug: "paper-view"
-tags: ["论文", "端侧AI", "LLM推理"]
-categories: ["论文阅读"]
+tags: ["paper"]
+categories: ["paper"]
+
 comments: true
 math: true
 ---
 
-# 论文阅读笔记
+# paper笔记
 
-端侧AI系统优化、LLM推理加速、小模型增强等方向的论文阅读笔记。
+端侧AI系统优化、LLM推理加速、小模型增强等方向的paper笔记。
 
 ## 目录
 
@@ -69,3 +70,4 @@ math: true
 - Continuous Batching
 - PagedAttention / FlashAttention
 - KV Cache 优化
+
