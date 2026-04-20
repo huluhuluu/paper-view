@@ -1,24 +1,14 @@
 ---
-title: "LLM in a flash: Efficient Large Language Model Inference with Limited Memory"
+title: "LLM in a Flash: Efficient Large Language Model Inference with Limited Memory"
 date: 2026-04-02T10:22:00+08:00
+lastmod: 2026-04-15T21:00:00+08:00
+draft: true
 slug: "llm-in-flash-ssd"
 tags: ["on-device", "Memory-Limited"]
 categories: ["paper"]
 math: true
 ---
 
-## 1. 核心贡献 (Core Contributions)
+# LLM in a Flash
 
-Apple 团队出品，解决了 4GB/8GB 内存手机运行超大模型的问题。其核心贡献：
-1. **闪存为缓存 (Flash as Cache)**: 将模型参数存放在闪存中。
-2. **窗口式加载 (Windowing)**: 只将当前计算层附近的权重常驻内存，随推理进程滑动更新。
-3. **列式捆绑 (Row-Column Bundling)**: 优化 SSD 读取模式，最大化闪存的顺序读吞吐量。
-
-## 2. 深度分析 (Analysis)
-
-### 为什么这篇文章具有开创性？
-它彻底否定了“模型必须全装进内存”的传统信条。通过精密的访存流水线设计，它让“内存”成为了权重的“高速中转站”。
-- **优势**: 极大降低了手机硬件门槛。
-- **对比**: 相比 PowerInfer-2，本篇更偏向于存储层级的底层管理。
-
-这种“空间换内存”的思想，对于目前内存配置仍然较紧俏的移动端生态系统具有深远的工程指导意义。
+- **LLM in a Flash** 正文引言首先把问题定在“模型参数比设备 DRAM 更大”这条硬边界上：像 7B 级模型仅半精度权重就超过十几 GB，单靠量化并不能改变“整模型需要同时驻留 DRAM”这一前提。论文随后专门分析了 flash 与 DRAM 的差异，指出 flash 的顺序读带宽虽然不低，但随机小块读取的首字节延迟和吞吐衰减会迅速放大，因此如果仍按矩阵的常规访问方式逐块搬运权重，端侧推理会被 I/O 完全拖住。围绕这一点，方法部分先建立同时考虑 chunk size 和传输量的 inference cost model，再提出三类优化：只把 attention 和 embedding 常驻 DRAM，对 FFN 依赖低秩 predictor 做按需加载；用 `windowing` 复用最近若干 token 对应的激活神经元，减少重复搬运；再用 `row-column bundling` 和专门的数据结构把 flash 访问改写成更大的顺序块。正文实验显示，这套设计能够在只提供约一半模型容量 DRAM 的情况下运行约 `2x` 于可用内存的模型，并相对 naive loading 在 CPU 和 GPU 后端分别获得最高约 `4x` 和 `20x` 的推理提速。

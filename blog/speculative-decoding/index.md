@@ -2,6 +2,7 @@
 title: "推测解码 系列论文深度解析"
 date: 2026-04-02T12:00:00+08:00
 lastmod: 2026-04-02T12:00:00+08:00
+draft: true
 slug: "speculative-decoding-overview"
 tags: ["speculative-decoding", "LLM-Inference", "LLM-Acceleration"]
 categories: ["paper"]

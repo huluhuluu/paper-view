@@ -2,6 +2,7 @@
 title: "Fast On-device LLM Inference with NPUs"
 date: 2026-04-02T10:20:00+08:00
 lastmod: 2026-04-15T21:00:00+08:00
+draft: false
 slug: "asplos25-npu-llm"
 tags: ["on-device", "NPU", "ASPLOS"]
 categories: ["paper"]
