@@ -1,30 +1,36 @@
 ---
-title: "[ASPLOS 2025] Fast On-device LLM Inference with NPUs"
+title: "Fast On-device LLM Inference with NPUs"
 date: 2026-04-02T10:20:00+08:00
+lastmod: 2026-04-15T21:00:00+08:00
 slug: "asplos25-npu-llm"
 tags: ["on-device", "NPU", "ASPLOS"]
 categories: ["paper"]
 math: true
 ---
 
-## 1. 核心贡献 (Core Contributions)
+# Fast On-device LLM Inference with NPUs
 
-ASPLOS 2025 的这篇工作将手机端 LLM 推理推向了新的高度。其核心贡献：
-1. **指令级算子融合 (Instruction-level Fusion)**: 针对移动端 NPU 的底层指令集，将内存密集型的算子直接融合进计算指令流，显著减少了访存开销。
-2. **混合精度与非对称量化**: 在 NPU 的 INT4 和 FP16 精度间进行最优分配，保证模型精度的同时，利用 NPU 的专用加速单元。
-3. **内存重用 (Memory Reuse)**: 极大提升了在极窄带宽（Bandwidth-bound）下的数据搬运效率。
+论文在真实的端侧实现了基于NPU的LLM推理系统，提出了一系列优化方法来提升性能和效率，并且代码开源。
+- **数据分析：**
+  - **计算效率：** `Snapdragon 8 Gen 3` 的 `NPU` 计算`INT8` 的效率远高于`FP16`, 如下表
+  ![Snapdragon 8 Gen 3 上 INT8 与 FP16 的 NPU 吞吐对比](./png/npu-int8-throughput-comparison.png)
+  - **Npu执行时间：** `NPU` 执行中计算图的构建与优化环节耗时最长，如下图
+![NPU 推理中建图与优化阶段的耗时分解](./png/npu-graph-build-runtime-breakdown.png)
+  - **精度：** 通常`LLM`推理中的`Attention`计算是需要更高精度(涉及到`softmax`层)，线性层的计算可以接受更低精度的量化。
+![Attention 层与线性层的精度敏感性对比](./png/attention-precision-sensitivity.png)
 
-## 2. 核心方法 (Methods)
 
-### 2.1 针对 NPU 的深度定制
-NPU 不同于通用的 GPU，其算力强但生态碎。本文通过自定义指令流水线，实现了 Llama-3-8B 在手机 NPU 上以 **20+ tokens/s** 的速度流畅运行。
+- **核心方法：**
+  - **分块共享图：** 移动NPU通常仅支持静态形状推理，为不同prompt长度生成不同计算图开销大，论文使用分块图共享方法，如下图c，对输入做分块处理，计算图中的线性层等无依赖部分共享，数据依赖部分不共享，相比直接块切分(图b)可以节约75%内存
+![分块共享图方案与直接块切分的对比](./png/chunked-graph-sharing-design.png)
+  - **精度异常值提取：** 量化算法执行时存在异常激活值(outlier)，这部分需要高精度计算，论文把需要高精度计算的部分交给`CPU`，可以快速`INT8`计算的部分有`NPU`执行，如下图，
+![异常值通道卸载到 CPU 的混合执行流程](./png/outlier-offloading-pipeline.png)
+并且，异常值通常高度集中在部分通道,如下图，论文把常见通道权重备份到`CPU`,其余则直接从`Disk`加载
+![异常激活值在少量通道中的集中分布](./png/outlier-channel-concentration.png)
+另外，部分异常值可以直接忽略对整体推理精度没有影响，论文通过大规模语料库数据对异常值重要性进行分析，剔除了大部分非关键层的异常值，进一步提升了效率。
+  - **乱序子图执行：** NPU 的工作负载更重且构成关键路径，论文选择优化子图调度以减少 NPU 停滞，子图的执行顺序只遵循基本的依赖关系，如下图
+![乱序子图执行的调度示意](./png/out-of-order-subgraph-schedule.png)
+具体来说，论文量化每个子图在NPU或者CPU/GPU上运行将会带来的依赖子图在NPU上的运行时间收益，例如当前子图部分在NPU运行，后续带来的非NPU子图运行时间收益是负值，对应下面公式的第二行。
+![子图调度收益量化公式](./png/subgraph-benefit-model.png)
 
-### 2.2 软硬件协同
-通过量化感知训练（QAT）和 NPU 的本地调度器配合，消除了 CPU 到 NPU 之间的任务调度延迟。
-
-## 3. 深度分析与更高层次分析 (Analysis)
-
-### 为什么这篇文章很重要？
-在移动端，GPU 的主要职责是渲染 UI 和图形任务，长时间高负荷运行 LLM 会导致严重的“发热降频”。
-- **优势**: NPU 作为专门的 AI 加速芯片，功耗极低。ASPLOS'25 的工作证明了：**端侧 LLM 的未来必然是 NPU-First**。
-- **行业趋势**: 这篇论文预示着，随着 Agent 类应用在手机端的常驻（Always-on），只有通过底层算子与硬件指令的高度适配，才能在保证续航的前提下，提供秒级的端侧大模型响应。
+- **实验结果：** 论文在`Snapdragon 8 Gen 3`上测试了`Qwen1.5-1.8B`模型可以达到`1106 token/s`的速度。

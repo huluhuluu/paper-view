@@ -10,358 +10,148 @@ math: true
 
 # 推测解码系列论文深度解析
 
-推测解码 是近年来大语言模型推理加速领域最重要的技术突破之一。其核心思想是"空间换时间"——使用轻量级草稿模型快速生成候选 token，然后由目标模型并行验证，从而打破自回归生成的串行瓶颈。本文将系统性地解析该领域的代表性工作，从基础框架到最新进展。
+推测解码 是近年来大语言模型推理加速领域最重要的技术突破之一。其核心思想是"空间换时间"——使用轻量级草稿模型快速生成候选 token，然后由目标模型并行验证，从而打破自回归生成的串行瓶颈。本博客记录阅读过的相关领域的代表性工作。
 
 ---
 
-## 一、基础框架：MEDUSA 与多头并行预测
+## 1. Lookahead(基于词表预测)
+### 1.1 Lookahead: An Inference Acceleration Framework for Large Language Model with Lossless Generation Accuracy
+## TODO:
+`Lookahead` 是基于词表预测的推测解码框架。它通过构建一个**字典树（Trie）**来并行预测未来多个 token 的分布，从而实现加速。
+- **结构：** 分词组的**固定搭配**出现频率更高，所以用如下图第三行的**字典树**来构建`Draft Tree`候选树，并在每一步预测时并行验证树上的所有节点。
+![Lookahead 使用 Trie 构建草稿树的示意图](./png/lookahead_trie.png)
+虽然这种方法在一定程度上提升了推理速度，但由于其**依赖于词表子集**，且无法适应上下文变化，接受率较低，实际加速效果受限。
 
-### 1.1 MEDUSA: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads
+- **草稿树：** 可以通过树形注意力一次前向传播并行验证所有候选 `token` 路径，极大地减少了推测解码的串行开销。简单来说就是通过大模型输入的`Position_id`来控制前后顺序，`Attention_Mask`来控制当前路径的可见前序`token`，如下图所示。
+![树形注意力验证草稿树路径的示意图](./png/draft_tree.png)
 
-**核心贡献：**
+## 2. Speculative Decoding(大小模型预测)
 
-MEDUSA 针对大语言模型（LLM）自回归生成的串行瓶颈，提出了一种简洁而高效的加速框架：
+## 3. MEDUSA(多头并行预测)
 
-1. **多头结构**: 不同于传统的 Speculative Decoding 需要维护一个独立的草稿模型（Draft Model），MEDUSA 直接在主模型的最后一个隐藏层上并行挂载了多个 MLP 头。
-2. **无需草稿模型**: 极大地降低了系统复杂度，避免了模型间同步和草稿模型占用的额外显存。
-3. **Tree Attention**: 提出了一种树状注意力机制，允许在一次大模型的前向传递中验证多个候选 token 路径。
+### 3.1 MEDUSA: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads
 
-**核心方法：**
+`MEDUSA` 通过在大模型的最后一层隐藏层上并行挂载多个独立的 `Lm_head` 层，来实现多个未来位置的 `token` 分布预测，从而实现**完全并行化**的草稿生成。
+- **模型结构：** `MEDUSA`的核心结构是在大模型的最后一层隐藏层上并行挂载了多个独立的`Lm_head` 层，每个头负责预测未来第 $i$ 个位置的 token 分布, 如下图。
+![MEDUSA 多头并行预测结构图](./png/medusa_heads.png)
 
-在 Llama 等主模型之上，MEDUSA 挂载了 $k$ 个独立的 MLP 头。每个头负责预测未来第 $i$ 个位置（$1 \le i \le k$）的 token 分布。预测公式如下：
+由于每个 `Medusa Head` 都是独立的，并且**没有任何依赖关系**，因此 `MEDUSA` 的草稿生成可以完全并行化，极大地降低了推测解码的延迟。
 
-$$p_t^{(i)} = \text{softmax}(W_2^{(i)} \cdot \text{SiLU}(W_1^{(i)} \cdot h_t) + h_t)$$
+- **草稿树：**每个 `Medusa Head` 直接预测 token 分布，无法**形成各条完整的`token`路径**, 因此`MEDUSA`在每一步采集的候选 token 之间缺乏上下文依赖建模，接受率也受限。所以`Medusa`的草稿树需要将每个位置采样的结果进行排列组合，最终构建一个节点数量为$\sum_{k=1}^{K} \prod_{i=1}^{k} s_i$，其中$s_i$是第$i$个位置的采样数量，这里每个位置的采样数量可以根据不同的分布特征进行动态调整。
+![MEDUSA 组合候选 token 后形成的草稿树](./png/medusa_tree.png)
 
-其中 $h_t$ 是主模型第 $t$ 步的隐藏状态，$W_1^{(i)} \in \mathbb{R}^{d \times d}$，$W_2^{(i)} \in \mathbb{R}^{d \times V}$。
 
-MEDUSA 并不简单地只预测一条路径，而是生成多个候选并构建出一棵"草稿树"。通过构建一个特殊的 $N \times N$ 的 Attention Mask，MEDUSA 可以在单次推理中并行验证树上的所有节点。
+- **训练策略：** 两个方式，一是"冻结主模型，训练头"的策略，二是"联合训练主干模型和头层"。前者训练更快，但后者能获得更高的接受率。另外多头结构天然适合**自蒸馏**训练，缺乏高质量微调数据时，利用主模型自身生成的预测分布作为“标签”来训练头。
 
-**训练策略：**
-
-MEDUSA 采用"冻结主模型，训练头"的策略。这种方式不仅保护了主模型的生成能力，还能在极小的数据集（如 ShareGPT）上快速收敛。
-
-**优势与局限：**
-
-- **延迟极低**: 相比传统的 Speculative Decoding（如 Leviathan 等），MEDUSA 避免了草稿模型生成 token 时的等待时间。
-- **内存友好**: 只有一个模型，KV Cache 管理更加直接。
-
-然而，MEDUSA 的主要缺陷在于其预测是"静态"的。由于每个 Medusa Head 仅基于当前的隐藏状态 $h_t$ 进行独立预测，忽略了预测过程中 token 间的相互依赖关系。这导致当推测步数 $k$ 增大时，准确率会呈指数级下降。
+- **采样策略：** 典型接受方案（`Typical Acceptance Scheme`），接受超过概率阈值的`token`作为草稿.个人感觉这里还是因为**没有准确的上下文依赖**，不同解码分支路线上的词不能同时拟合到同一个`logits`分布上，举例如上图的`Head 1`采样`It,I`，这时对应下一步`Head 2`的分布来说, `It->is`和`I->is`的分布不可能同时你和到`Head 2`上，所以拒绝采样在这里不能准确对齐分布。
 
 ---
 
-## 二、特征层自回归：EAGLE 系列的范式转移
+## 4. EAGLE(特征层自回归)
 
-### 2.1 EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty
+### 4.1 EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty
 
-**核心贡献：**
+`Eagle` 提出通过**特征层自回归**进行草稿生成
+- **模型结构：** `EAGLE` 引入了特征层自回归的范式, 不只是用`token`的`embedding`作为输入，而是将前一层的隐藏状态 $h_{t-1}$ 以及当前 `token` 的嵌入向量作为输入。同时模型结构由完整的小模型，变为一个自回归的线性层+原模型的 `LM Head`层，如下图所示。
+![EAGLE 特征层自回归草稿模型结构图](./png/eagle-architecture.png)
 
-EAGLE 在推测解码领域引入了范式转移：
+- **训练策略：** 论文提出了**特征损失（Feature Loss）**，通过最小化草稿模型和目标模型在隐藏层特征空间的距离来提升草稿模型的预测准确度。具体来说，除了传统的 token 预测损失外，还引入了一个额外的损失项，衡量草稿模型生成的隐藏状态与目标模型对应层的隐藏状态之间的差异：
+$$\mathcal{L} = \mathcal{L}_{reg} + w_{cls} \cdot \mathcal{L}_{cls}$$
+其中 $\mathcal{L}_{reg}$ 是特征层预测的交叉熵损失，$\mathcal{L}_{cls}$ 是`token`预测的损失,$w_{cls}$ 是权重超参数。
 
-1. **特征层自回归**: 提出不在词表层做推测，而是在特征层进行自回归推测。
-2. **重塑不确定性**: 论证了特征层的不确定性远低于词表层，从而能实现更高的接受率。
+- **草稿树：** `EAGLE` 的草稿树是基于特征层自回归生成的，所以每个节点的`token`都依赖于前一个`token`，相比于`Medusa`可以构建具备依赖的草稿树，大幅减少了节点数量，草稿树示意图如下。
+![EAGLE 具有上下文依赖的草稿树结构](./png/eagle-tree-structure.png)
 
-**关键洞察：**
+## 5. EAGLE-2(动态草稿树)
 
-论文提出了两个关键观察：
-1. **特征层的自回归比词表层更简单**: 特征序列比 token 序列展现更强的规律性。在特征层进行自回归处理，然后使用原始 LLM 的 LM Head 推导 token，比直接预测 token 效果更好。
-2. **采样过程的不确定性**: 在文本生成中，目标 LLM 预测 token 分布并采样，引入随机性。不同的采样 token（如 "am" 或 "always"）导致不同的特征序列，这给特征层自回归带来了歧义。
+### 5.1 EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees
 
-**结构设计：**
+`EAGLE-2` 提出了草稿 token 的接受率不仅与位置有关，更高度依赖于**上下文环境**，引出**动态草稿树**机制。
 
-EAGLE 包含一个极轻量级的自回归组件（通常只有 1 层 Transformer）。其输入是当前 token 的嵌入向量 $e_t$ 和前一层的隐藏状态 $h_{t-1}$，以及一个时间步提前的 token 序列来解决不确定性问题。
+- **动态树结构：** 每一次草稿都向下扩展节点，然后按照当前节点的概率(从根节点到该节点的概率累乘)进行排序，保留概率最高的前 $k$ 个节点，形成新的草稿树，随后通过一次`tree attention`(实际还是一维数据)继续进行草稿生成/验证，如下图所示。
+![EAGLE-2 动态裁剪草稿树的构建过程](./png/eagle2-dynamic-draft-tree.png)
 
-**为什么 EAGLE 比 Medusa 强？**
+## 6. EAGLE-3(数据 Scaling)
 
-Medusa 的每个头是并行的、相互独立的。而 EAGLE 是自回归的，能够捕获更丰富的上下文信息：
-- **数据证明**: 在 Llama-2-70B 上，EAGLE 的接受率通常能达到 80% 以上，而 Medusa 在长序列预测时准确率会骤降。
-- **计算开销**: 虽然 EAGLE 引入了自回归，但因为操作的是 Hidden States 而非完整的词表，其单步延迟极低。
+### 6.1 EAGLE-3: Scaling up Inference Acceleration via Training-Time Test
 
-EAGLE 实际上是在模仿大模型的"思维路径"。通过在更稳定的高维特征空间进行推测，它极大地缓解了自回归生成中的"累积误差"问题。
+`EAGLE-3` 解决了推测解码模型**拉大训练数据规模对草稿模型提升有限**的问题
 
-### 2.2 EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees
+- **模型结构：** 如下图所示, 草稿模型首先扩大了输入数据，从模型的浅层/中层/深层获得激活，通过一层线性层投影回正常的`hidden`大小，并且拼接上一个`token`的嵌入向量作为输入，来进行草稿预测。草稿模型的模型结构是自回归的(线性投影层 + 一层注意力层 + 输出的`Head`层)。
+![EAGLE-3 多层特征输入的草稿模型结构](./png/eagle3-architecture.png)
 
-**核心贡献：**
+- **训练策略：** 论文最核心的要点，在`Eagle`中模型训练通过加权`token`损失和`feature`损失进行训练，如下图。
+![EAGLE 中 token loss 与 feature loss 的训练设计](./png/eagle3-loss-design.png)
+虽然使用`feature`损失可以让草稿模型更快地拟合目标模型的特征分布，从第0步的预测推广到第1步的预测(如下图黄线，0-$\alpha$可以很好推广到1-$\alpha$), 但它也限制了草稿模型从数据量中获得的表达能力提升(下图黄线中0-$\alpha$，去掉`feature`损失可以从横坐标的数据规模变大中获得更大接受率，而红线该规律不明显)。
+![是否使用 feature loss 时的数据规模扩展对比](./png/eagle3-scaling-comparison.png)
+于是`EAGLE-3` 直接去掉了`feature`损失，改为**Training-Time Test**，直接以 `token` 预测为目标(上上图的中间部分)，并且为了弥补1-$\alpha$带来的准确率降低问题，`Eagle-3` 把草稿模型生成的`token`纳入后续草稿模型的训练输入中(上上图的最底部分)，这种方法让草稿模型能够更充分地利用大规模数据的表达能力提升。
+![EAGLE-3 Training-Time Test 的训练流程](./png/eagle3-training-time-test.png)
+在训练过程中，草稿模型需要对每个位置都要有自己的延申分支，如上图`How, Can, I`三个`token`都分别向下延申一个分支，使得训练过程的计算和显存提高。
 
-EAGLE-2 进一步完善了 EAGLE 框架，提出了 **动态草稿树**，解决了推测解码在处理逻辑复杂或歧义较多的文本时效果不佳的问题。
+- **加速效果：** 最后实验效果相当惊人，能达到约6步的平均接受长度
+![EAGLE-3 平均接受长度实验结果](./png/eagle3-average-accept-length.png)
+并且每一步的预测接受率都能达到约80%，不会随着预测的步长增加而明显下降。
+![EAGLE-3 每一步预测的接受率](./png/eagle3-per-step-accept-rate.png)
 
-**关键发现：**
-
-论文发现一个重要现象：**草稿 token 的接受率不仅与位置相关，还高度依赖于上下文**。
-
-传统的静态草稿树（如 Sequoia、EAGLE-1、Medusa）假设接受率只与位置有关，这与推测解码的核心洞察相矛盾——有些 token 更简单，可以被小模型预测。
-
-**动态树结构：**
-
-不同于 EAGLE-1 或 Medusa 使用固定的树形状，EAGLE-2 会在每一步生成时评估当前 token 的置信度：
-- **确定性场景**: 树会变得很深，进行长路径推测
-- **不确定场景**: 树会变宽，探索更多可能的分支
-
-**校准性验证：**
-
-EAGLE-2 的关键创新在于发现 **EAGLE 的草稿模型是良好校准的**：草稿模型的置信度分数（概率）是接受率的良好近似。这使得在不运行目标 LLM 的情况下，动态调整草稿树结构成为可能。
-
-**优势分析：**
-
-EAGLE-2 的最大优势在于其**自适应性**。在处理代码或专业文献等确定性强的任务时，其加速比可达 3x 以上；而在闲聊等发散性任务中，它通过变宽的树结构有效维持了接受率，避免了频繁的回退。
-
-### 2.3 EAGLE-3: Scaling up Inference Acceleration via Training-Time Test
-
-**核心贡献：**
-
-EAGLE-3 是该系列的集大成者，核心贡献集中在：
-
-1. **训练时测试**: 模拟多步生成过程进行训练，使草稿模型能充分受益于扩大训练数据。
-2. **多层特征融合**: 不再仅依赖顶层特征，而是融合低、中、高层特征，捕获更丰富的语义信息。
-3. **直接 Token 预测**: 放弃特征预测约束，直接预测 token，提供完全的灵活性。
-
-**关键洞察：**
-
-论文发现，虽然现代 LLM 通过扩大训练数据来提升模型能力，但 EAGLE 从增加训练数据中获得的改进有限。原因在于：
-
-EAGLE 的损失函数包含两部分：特征预测损失 $l_{fea}$ 和 token 预测损失 $l_{token}$。特征预测约束限制了草稿模型的表达能力，使其难以从增加的数据中受益。
-
-**解决方案：**
-
-EAGLE-3 引入 **Training-Time Test**：
-- 移除特征预测损失 $l_{fea}$
-- 在训练过程中模拟多步生成
-- 使用多层特征融合替代仅依赖顶层特征
-
-**Scaling Law 发现：**
-
-EAGLE-3 首次观察到：**随着草稿模型训练数据量的增加，加速比呈比例增长**。这一 Scaling 行为在原始 EAGLE 架构中从未被观察到。
-
-**词表优化：**
-
-针对 Llama-3 的 128k 词表，EAGLE-3 通过数据驱动方法识别并保留最核心的 32,768 个 token。这不仅减小了模型大小，还将 Softmax 延迟降低了 4 倍。
+---
+### 7. 小结
 
 ---
 
-## 三、MEDUSA vs EAGLE 系列对比总结
+## 7. 突破瓶颈：并行化与扩散思路
 
-从架构设计角度分析，MEDUSA 和 EAGLE 系列代表了两种不同的思路：
+### 7.1 DFlash: Block Diffusion for Flash Speculative Decoding
 
-| 特性 | MEDUSA | EAGLE 系列 |
-|------|--------|-----------|
-| **预测方式** | 多个独立 MLP 头并行预测 | 特征层自回归预测 |
-| **计算开销** | k 个 LM Head 并行计算 | k 次自回归前向传播 |
-| **预测依赖** | 各头独立，无依赖 | 后续预测依赖前面的采样结果 |
-| **接受率** | 约 60% | 约 80%+ |
-| **训练复杂度** | 仅训练头 | 训练轻量 Transformer |
+`DFlash` 引入了**扩散模型（Diffusion Model）**打破草稿模型自回归生成的串行限制。
+- **分析建模：** 单个`token`解码时间平均为：$L = \frac{T_{\text{draft}} + T_{\text{verify}}}{\tau},$其中$\tau$是接受长度，对u有自回归草稿模型需要$\gamma$步生成草稿，时间为：$T_{\text{draft}} = \gamma \cdot t_{step}$，而扩散模型草稿时间与生成长度无关：$T_{\text{draft}} = t_{parallel}$。由此, 对于不同草稿模型预测长度，扩散模型的草稿时间不变。
+![DFlash 中不同草稿长度下的延迟变化](./png/dflash-latency-scaling.png)
+- **模型结构：** 如图，草稿模型使用多各双向注意力层+输出`Head`层结构，本质上拉大了模型的参数规模。这里草稿模型预测时使用`<mask>`标记未来位置的输入，一次生成多个位置的`token`。另外，论文从目标模型的浅层到深层均匀采样激活并通过线性层投影到隐藏层维度，随后作为每一层的`KVcahe`注入到各个双向注意力层中。
+![DFlash 基于块扩散的草稿模型结构](./png/dflash-architecture.png)
+- **加速效果：** 在小模型上的测试中，单步接受步长可以达到6-7步，非常夸张。但是注意这里的测试是16层双向注意力层结构，实际给模型scale拉大了。
+![DFlash 单步接受长度的实验结果](./png/dflash-results.png)
 
-**MEDUSA** 本质上也是一种草稿模型方案，只不过草稿模型是多层 LM Head。每个头独立预测，计算上可以完全并行，但缺乏 token 间的依赖建模。
 
-**EAGLE** 系列实际上修改了模型结构，扩大了输入数据量（引入提前一步的 token 序列），并沿用了自回归机制。从计算角度来看：
-- k 次草稿需要 k 个 LM Head 和自回归 head 的计算
-- MEDUSA 只需要 k 个并行的 LM Head
+### 7.2 P-EAGLE: Parallel-Drafting EAGLE with Scalable Training
 
-EAGLE 系列通过在特征层操作，利用了目标模型的丰富上下文信息，实现了更高的接受率和加速比。
+`P-EAGLE` 将 `EAGLE` 从“特征自回归”转变为“特征并行化”，同样实现一步预测多个位置的草稿生成。
+- **模型结构：** 一层线性投影层+**多层**多头注意力层+目标模型的`LM Head`层结构。这里草稿模型的输入和`Eagle3`相似，上下文部分的输入是目标模型的`浅/中/深层`的投影与`token`嵌入向量的拼接；而待预测的位置的输入则是共享隐藏状态向量+特殊的`<mask>`标记的嵌入向量，这里的两部分都是可以学习的。
+![P-EAGLE 并行起草模型结构图](./png/p-eagle-architecture.png)
 
----
+- **核心分析：**
+  - 训练显存：`Eagle3`方法需要在每个位置上都要有一个分支，训练长度是 $O(nK)$ , `PARD`论文随机丢弃部分分支，第一个位置保留 $O(nr)$ ，第二个位置保留 $O(nr^2)$，以此类推，第$k$个位置保留 $O(nr^k)$，其中$r\in (0,1) $是保留率。在长文本场景下容易超显存, 如下表`OOM`。
 
-## 四、突破瓶颈：云侧扩展的新方向
+   ![P-EAGLE 与 Eagle3 的训练显存对比](./png/p-eagle-memory-comparison.png)
+   - **位置不变性：** 论文发现每个训练的位置的因果结构具有位置不变性— TODO:
 
-当 EAGLE-3 达到约 3x 加速后，进一步优化遇到瓶颈。近期的研究从不同角度探索了新的突破方向。
+   ![P-EAGLE 论文中的位置不变性分析](./png/p-eagle-position-invariance.png)
 
-### 4.1 DFlash: Block Diffusion for Flash Speculative Decoding
+**训练策略：** 开发了 `Amortized Mask Construction`（预计算掩码）和 `Sequence Partitioning`（序列分区梯度累积）技术，支持高达 **20K** token 的长序列训练，显著提升了模型在复杂上下文下的推测稳定性。
 
-**核心贡献：**
-
-DFlash 引入了 **扩散模型** 的思想，试图打破传统自回归草稿生成的限制：
-
-1. **并行块生成**: 不同于 EAGLE 的序列生成，DFlash 可以同时生成一整块 token
-2. **利用目标模型的隐藏特征**: 将草稿模型作为扩散适配器，高效利用目标模型建模的深度上下文特征
-
-**核心方法：**
-
-DFlash 使用轻量级块扩散模型进行并行草稿：
-- 利用目标 LLM 的隐藏特征作为条件上下文
-- 在单次前向传播中生成所有 γ 个 token
-- 训练简单的 mask token 嵌入来编码 MTP 位置的有意义输入
-
-**自回归 vs 扩散草稿对比：**
-
-| 方式 | 草稿开销 | 特点 |
-|------|----------|------|
-| 自回归 | $T_{draft} = \gamma \cdot t_{step}$ | 线性增长，受限于浅层架构 |
-| 扩散 | $T_{draft} = t_{step}$ | 恒定开销，与 γ 无关 |
-
-**优势分析：**
-
-DFlash 在 Qwen3-8B 上实现了最高 6.1x 加速，比 EAGLE-3 快 2.5x。扩散草稿的关键优势在于：
-- 单次前向传播生成多个 token
-- 避免了自回归的累积误差
-- 更适合高吞吐量场景
-
-### 4.2 P-EAGLE: Parallel-Drafting EAGLE with Scalable Training
-
-**核心贡献：**
-
-P-EAGLE 将 EAGLE 从自回归生成转变为并行多 token 预测：
-
-1. **可学习共享隐藏状态**: 通过 $h_{shared}$ 替代缺失的隐藏向量
-2. **可扩展的长上下文训练**: 通过注意力掩码预计算和序列分区技术，支持 20K token 训练
-
-**挑战与解决：**
-
-并行草稿预测面临内存扩展挑战——有效序列长度随并行预测位置数线性增长。P-EAGLE 的解决方案：
-- **Amortized Mask Construction**: 预计算注意力掩码
-- **Sequence Partitioning**: 将单个序列分段进行梯度累积
-
-**架构创新：**
-
-P-EAGLE 引入可学习参数：
-- **$h_{shared}$**: 替代 MTP 位置缺失的隐藏向量
-- **Mask Token Embedding**: 替代未知的前置 token
-
-理论分析表明，注意力机制本身就编码了足够的位置信息，无需位置特定的隐藏状态。
-
-### 4.3 Speculative Speculative Decoding (SSD)
-
-**核心贡献：**
-
-这篇论文提出了一个非常有意思的"套娃"思路：**推测中再套一层推测**。
-
-**核心思想：**
-
-在验证进行时，草稿模型预测可能的验证结果，并提前准备相应的推测：
-- 如果实际验证结果在预测集合中，可以立即返回推测
-- 完全消除草稿开销
-
-**三大挑战：**
-
-1. **预测验证结果**: 需要预测接受的 token 数量和 bonus token
-2. **接受率与预测准确性的权衡**: 需要平衡两个目标
-3. **失败处理策略**: 批量大小大时失败更频繁
-
-**Saguaro 算法：**
-
-- 使用最可能的草稿 logits 预测 bonus token，准确率达 90%
-- 开发采样算法平衡预测准确性和推测质量
-- 根据批量大小选择最优回退策略
-
-**结果：** 平均比最强推测解码基线快 30%，比自回归解码快 5x。
 
 ---
 
-## 五、云侧优化方向总结
+## 8. 细节优化
 
-从上述工作可以归纳出云侧推测解码的主要优化方向：
+### 8.1 FR-Spec: Accelerating Large-Vocabulary Language Models via Frequency-Ranked Speculative Sampling
 
-### 5.1 扩大参数规模
+论文提出了 `FR-Spec`，将草稿模型的词表进行压缩
+- **长尾分布：** 大部分词表的token出现频率较低，如图25%的词表覆盖了95%的token出现频率。
+![FR-Spec 词表频率覆盖的长尾分布统计](./png/fr-spec-token-frequency-coverage.png)
+- **时间分析：** 草稿模型的`head`层在大词汇表情况下大概耗49%的草稿时间
+![FR-Spec 中草稿模型 head 层的时间占比](./png/fr-spec-draft-head-runtime-breakdown.png)
+- **频率排序的草稿机制：** `FR-Spec` 根据词表中 token 的出现频率对候选词进行排序，优先选择高频词作为草稿预测的候选，从而减少不必要的计算开销。
 
-P-EAGLE 使用 4 层 Transformer 架构，比单层 EAGLE-3 接受长度高 46%。在云侧场景，内存和算力相对充裕，适当增加草稿模型容量是有效的优化方向。
+### 8.2 Draft Model Knows When to Stop: Self-Verification Speculative Decoding for Long-Form Generation
 
-### 5.2 并行化草稿生成
-
-DFlash 和 P-EAGLE 都致力于消除自回归草稿的串行瓶颈：
-- **DFlash**: 使用扩散模型，单次前向生成整块 token
-- **P-EAGLE**: 通过共享隐藏状态，实现并行多 token 预测
-
-### 5.3 异步流水线
-
-SSD 展示了将草稿和验证重叠执行的潜力。在分布式部署场景，草稿模型位于独立硬件上，可以与验证并行执行。
-
-### 5.4 适用场景
-
-| 优化方向 | 适用场景 | 加速效果 |
-|----------|----------|----------|
-| 扩大参数规模 | 云侧、高吞吐量 | 1.1-1.4x |
-| 并行草稿生成 | 云侧、大批量 | 1.5-2.5x |
-| 异步流水线 | 分布式部署 | 1.3x |
+论文提出`SVIP`，解决传统推测解码使用固定长度的草稿策略带来的可接受性波动极大问题
+- **核心分析：** 拒绝草稿模型`token`处的**KL散度**高于接受草稿模型`token`处，并且预测长度越长，拒绝概率越大，接受概率越小。如下图
+![SVIP 中接受与拒绝 token 的 KL 散度差异](./png/svip-kl-divergence-gap.png)
+- **核心方法：**  由于草稿模型与目标模型的KL散度难以估计，论文从采样概率开始进行缩放分析，使用草稿模型**预测熵**作为代理来近似接受率下界。 
 
 ---
 
-## 六、细节优化：词表与动态策略
+## 九、总结
 
-### 6.1 Speculative Decoding with a Speculative Vocabulary (SpecVocab)
-
-**核心问题：**
-
-现代 LLM 的词表越来越大（如 Qwen3 的 152K），计算输出分布的开销成为草稿阶段的主要瓶颈。在 EAGLE 框架中，大部分草稿时间花在计算目标词表上的输出分布。
-
-**现有方案的问题：**
-
-FR-Spec、EAGLE-3、VocabTrim 都使用固定词表子集来减少投影延迟。但当目标 token 超出子集时，当前和后续草稿 token 都会被拒绝，抵消了加速效果。
-
-**SpecVocab 方法：**
-
-提出**词表推测**作为固定词表的替代方案：
-
-1. **词表排序**: 使用草稿模型最终隐藏状态 $h_t$ 计算词表排名
-2. **候选选择**: 选择 top-k 个上下文相关的词表子集
-3. **输出计算**: 仅计算候选词表的 logits
-
-$$K_t = \text{top-k}(s_t, k)$$
-$$z'_t = U_{K_t} h_t$$
-
-**优势：**
-
-SpecVocab 是上下文感知的，可以使用比固定方法（32K）更小的子集（通常 2048），同时保持更好的覆盖率。实验表明，SpecVocab 比 EAGLE-3 实现了更高的接受长度，吞吐量提升 8.1%。
-
-### 6.2 Draft Model Knows When to Stop: Self-Verification for Long-Form Generation
-
-**核心问题：**
-
-传统推测解码方法使用固定长度策略提出草稿，假设目标模型会顺利接受草稿 token。但实际中：
-- Oracle 草稿长度变化很大
-- 固定长度策略难以满足这一要求
-- 在复杂推理和长文本生成场景，这种差异更加严重
-
-**关键发现：**
-
-通过理论和实证分析，论文发现草稿模型和目标模型之间的差异可以用草稿模型的预测熵来近似：
-- **高熵** 表示草稿 token 接受率低
-- **低熵** 表示接受率高
-
-**SVIP 方法：**
-
-提出 **Self-Verification Length Policy**，一种无需训练的动态长度策略：
-
-$$\beta \geq 1 - \frac{1}{\sqrt{2}} \sqrt{H_{q,p} - H_q}$$
-
-使用草稿模型熵 $H_q$ 作为代理来近似接受率下界。当熵超过阈值时，草稿模型停止生成并启动验证。
-
-**效果：**
-
-- MT-Bench 8K 上下文：17% 加速
-- QwQ 长文本推理：22% 加速
-- 与 EAGLE-2 结合：额外 13% 加速
-
----
-
-## 七、总结与展望
-
-### 7.1 技术演进路线
-
-推测解码技术经历了三个阶段的演进：
-
-1. **基础框架阶段**: Speculative Sampling → MEDUSA
-   - 确立了"草稿-验证"范式
-   - MEDUSA 展示了无需独立草稿模型的可能性
-
-2. **特征层优化阶段**: EAGLE → EAGLE-2 → EAGLE-3
-   - 特征层自回归提供更高接受率
-   - 动态树结构适应上下文
-   - Training-Time Test 实现 Scaling Law
-
-3. **突破瓶颈阶段**: DFlash、P-EAGLE、SSD
-   - 扩散模型打破自回归限制
-   - 并行草稿消除串行开销
-   - 异步流水线最大化硬件利用
-
-### 7.2 关键洞察
-
-1. **特征层优于词表层**: 特征序列比 token 序列更有规律，预测更准确
-2. **上下文自适应**: 接受率高度依赖上下文，静态策略难以最优
-3. **并行化是关键**: 草稿生成的串行性是最终瓶颈
-4. **细节决定成败**: 词表优化、动态长度策略在极限场景下至关重要
-
-### 7.3 未来方向
-
-1. **端云协同**: 如何在端侧有限资源下实现高效推测解码
-2. **长文本优化**: CoT 推理模型的长时间生成需要更激进的优化
-3. **多模态扩展**: 推测解码思想是否可以扩展到多模态生成
 
 ---
 
@@ -376,3 +166,4 @@ $$\beta \geq 1 - \frac{1}{\sqrt{2}} \sqrt{H_{q,p} - H_q}$$
 7. Kumar et al., "Speculative Speculative Decoding", 2026
 8. Williams et al., "Speculative Decoding with a Speculative Vocabulary", 2026
 9. Zhang et al., "Draft Model Knows When to Stop: Self-Verification Speculative Decoding for Long-Form Generation", EMNLP 2024
+4
