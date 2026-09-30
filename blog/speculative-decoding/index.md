@@ -1,7 +1,7 @@
 ---
 title: "推测解码 系列论文深度解析"
 date: 2026-04-02T12:00:00+08:00
-lastmod: 2026-04-02T12:00:00+08:00
+lastmod: 2026-07-13T12:00:00+08:00
 draft: true
 slug: "speculative-decoding-overview"
 tags: ["speculative-decoding", "LLM-Inference", "LLM-Acceleration"]
@@ -18,13 +18,6 @@ math: true
 ## 1. Lookahead(基于词表预测)
 ### 1.1 Lookahead: An Inference Acceleration Framework for Large Language Model with Lossless Generation Accuracy
 ## TODO:
-`Lookahead` 是基于词表预测的推测解码框架。它通过构建一个**字典树（Trie）**来并行预测未来多个 token 的分布，从而实现加速。
-- **结构：** 分词组的**固定搭配**出现频率更高，所以用如下图第三行的**字典树**来构建`Draft Tree`候选树，并在每一步预测时并行验证树上的所有节点。
-![Lookahead 使用 Trie 构建草稿树的示意图](./png/lookahead_trie.png)
-虽然这种方法在一定程度上提升了推理速度，但由于其**依赖于词表子集**，且无法适应上下文变化，接受率较低，实际加速效果受限。
-
-- **草稿树：** 可以通过树形注意力一次前向传播并行验证所有候选 `token` 路径，极大地减少了推测解码的串行开销。简单来说就是通过大模型输入的`Position_id`来控制前后顺序，`Attention_Mask`来控制当前路径的可见前序`token`，如下图所示。
-![树形注意力验证草稿树路径的示意图](./png/draft_tree.png)
 
 ## 2. Speculative Decoding(大小模型预测)
 
@@ -33,7 +26,8 @@ math: true
 ### 3.1 MEDUSA: Simple LLM Inference Acceleration Framework with Multiple Decoding Heads
 
 `MEDUSA` 通过在大模型的最后一层隐藏层上并行挂载多个独立的 `Lm_head` 层，来实现多个未来位置的 `token` 分布预测，从而实现**完全并行化**的草稿生成。
-- **模型结构：** `MEDUSA`的核心结构是在大模型的最后一层隐藏层上并行挂载了多个独立的`Lm_head` 层，每个头负责预测未来第 $i$ 个位置的 token 分布, 如下图。
+- **模型结构：** `MEDUSA`的核心结构是在大模型的最后一层隐藏层上并行挂载了多个独立的`Lm_head` 层，每个头负责预测未来第 $i$ 个位置的 token 分布。
+
 ![MEDUSA 多头并行预测结构图](./png/medusa_heads.png)
 
 由于每个 `Medusa Head` 都是独立的，并且**没有任何依赖关系**，因此 `MEDUSA` 的草稿生成可以完全并行化，极大地降低了推测解码的延迟。
@@ -44,7 +38,7 @@ math: true
 
 - **训练策略：** 两个方式，一是"冻结主模型，训练头"的策略，二是"联合训练主干模型和头层"。前者训练更快，但后者能获得更高的接受率。另外多头结构天然适合**自蒸馏**训练，缺乏高质量微调数据时，利用主模型自身生成的预测分布作为“标签”来训练头。
 
-- **采样策略：** 典型接受方案（`Typical Acceptance Scheme`），接受超过概率阈值的`token`作为草稿.个人感觉这里还是因为**没有准确的上下文依赖**，不同解码分支路线上的词不能同时拟合到同一个`logits`分布上，举例如上图的`Head 1`采样`It,I`，这时对应下一步`Head 2`的分布来说, `It->is`和`I->is`的分布不可能同时你和到`Head 2`上，所以拒绝采样在这里不能准确对齐分布。
+- **采样策略：** 典型接受方案（`Typical Acceptance Scheme`）接受超过概率阈值的 `token` 作为草稿。限制来自上下文依赖不足：不同解码分支路线上的词很难同时拟合到同一个 `logits` 分布上。例如上图的 `Head 1` 采样 `It,I` 后，下一步 `Head 2` 需要同时覆盖 `It->is` 和 `I->is` 两条路径，拒绝采样难以准确对齐路径分布。
 
 ---
 
@@ -53,7 +47,7 @@ math: true
 ### 4.1 EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty
 
 `Eagle` 提出通过**特征层自回归**进行草稿生成
-- **模型结构：** `EAGLE` 引入了特征层自回归的范式, 不只是用`token`的`embedding`作为输入，而是将前一层的隐藏状态 $h_{t-1}$ 以及当前 `token` 的嵌入向量作为输入。同时模型结构由完整的小模型，变为一个自回归的线性层+原模型的 `LM Head`层，如下图所示。
+- **模型结构：** `EAGLE` 引入了特征层自回归的范式，输入包含前一层隐藏状态 $h_{t-1}$ 和当前 `token` 的嵌入向量。模型结构由完整小模型变为自回归线性层加原模型 `LM Head` 层，如下图所示。
 ![EAGLE 特征层自回归草稿模型结构图](./png/eagle-architecture.png)
 
 - **训练策略：** 论文提出了**特征损失（Feature Loss）**，通过最小化草稿模型和目标模型在隐藏层特征空间的距离来提升草稿模型的预测准确度。具体来说，除了传统的 token 预测损失外，还引入了一个额外的损失项，衡量草稿模型生成的隐藏状态与目标模型对应层的隐藏状态之间的差异：
@@ -151,7 +145,95 @@ $$\mathcal{L} = \mathcal{L}_{reg} + w_{cls} \cdot \mathcal{L}_{cls}$$
 
 ---
 
-## 九、总结
+## 9. 2026 最近路线：并行树、半自回归与验证剪枝
+
+### 9.1 Domino: Decoupling Causal Modeling from Autoregressive Drafting in Speculative Decoding
+
+`Domino` 解决的是草稿模型里的因果建模和草稿成本冲突：自回归草稿能建模 draft token 之间的依赖，但生成草稿本身变成串行；并行草稿成本低，但 block 内 token 之间的依赖弱，后缀接受率容易掉。
+
+- **核心方法：** 先用 parallel draft backbone 一次生成整个 block 的初始分布，再用轻量 `Domino head` 注入 prefix-dependent causal information。训练上使用 base-anchored curriculum，先强化并行 backbone，再逐步把优化目标转到 causally corrected final distribution。
+
+![Domino 将并行草稿 backbone 与因果修正 head 拆开](./png/domino-causal-modeling.png)
+
+图中显示 `Parallel Backbone` 先给出每个位置的隐藏状态和分布，`Domino Head` 再根据前缀状态修正后续位置。这个设计保留一次 forward 的并行优势，同时补上并行 drafter 缺失的路径条件。
+
+- **实验结果：** 论文在 Qwen3 模型上报告最高 `5.49x` Transformers 后端端到端加速，以及最高 `5.8x` SGLang serving throughput speedup。
+
+![Domino 在 Qwen3 上的延迟分解和速度对比](./png/domino-speedup.png)
+
+图中测量条件是 Qwen3-8B、A100、context length 1024、16-token speculative budget。Domino 的草稿路径多了 `DHead` 成本，但相比 EAGLE3 和 DFlash，它在接受长度和 speedup 的组合上更平衡。
+
+- **局限：** Domino 仍需要训练额外 head，并且速度收益依赖 target verification 与 draft overhead 的比例。长上下文、高 batch 或不同 serving engine 下，需要重新看 `DHead` 与 tree 构建开销。
+
+### 9.2 JetSpec: Breaking the Scaling Ceiling of Speculative Decoding with Parallel Tree Drafting
+
+用户写的 `JeSpec` 对应论文标题是 `JetSpec`。论文关注 draft budget 扩大后的 scaling ceiling：预算变大只有在接受率仍高、草稿成本仍低时才会转成速度收益。
+
+- **核心问题：** 自回归 tree drafter 能生成路径一致的候选，但树深变大时草稿成本上升；block diffusion drafter 一次生成所有位置，但边际分布可能各自合理、组合成树后不一致。
+
+- **核心方法：** `JetSpec` 训练 causal parallel draft head，使用 frozen target model 的 fused hidden states，生成和目标模型 autoregressive factorization 对齐的候选树。
+
+![JetSpec 的 causal parallel draft head 与 tree drafting 流程](./png/jetspec-framework.png)
+
+图中框架把 target model 隐藏状态、draft head 和 tree construction 接在一起。输入采用目标模型已有 hidden states；输出是带分支条件的候选树，随后用 target model 并行验证。
+
+- **实验结果：** 论文在 dense 和 MoE Qwen3 模型上测试数学、代码和 chat 任务，报告 H100 上 MATH-500 最高 `9.64x`，open-ended conversational workload 最高 `4.58x`。
+
+![JetSpec 在不同任务和模型上的 speedup](./png/jetspec-speedup.png)
+
+图中显示不同模型规模和任务下的 speedup。JetSpec 的收益来自更大的 draft budget 被转成更长 accepted prefix，而不是简单增加候选节点数。
+
+- **局限：** JetSpec 需要针对目标模型训练 draft head，并依赖 hidden-state interface。部署时要处理 tree budget、head 训练数据和 vLLM/SGLang 后端的 kernel 支持。
+
+### 9.3 DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation
+
+`DSpark` 是 DeepSeek-AI 的生产 serving 取向工作。论文把问题拆成两个：并行 drafter 的后缀接受率衰减，以及高并发 serving 中验证过长 block 会浪费 batch capacity。
+
+- **核心方法：** 模型侧采用 semi-autoregressive architecture，用 parallel backbone 负责高吞吐草稿，再用 lightweight sequential module 引入 block 内依赖；系统侧采用 confidence-scheduled verification，根据 prefix survival probability 和 engine throughput profile 动态决定每个请求验证多长。
+
+![DSpark 的半自回归草稿结构与验证调度](./png/dspark-architecture.png)
+
+图中左侧是 target model，右侧是 DSpark drafter。parallel module 给出多个位置，sequential module 补 intra-block dependency，verification scheduler 再按置信度决定实际送入目标模型验证的长度。
+
+- **实验结果：** 论文报告在 DeepSeek-V4 serving system 的 live user traffic 中，相对生产 baseline `MTP-1`，DSpark 在 matched throughput 下让 per-user generation speed 提升 `60%-85%`。
+
+![DSpark 的主结果表](./png/dspark-results.png)
+
+图中表格比较不同调度和 drafter 的 accepted length、speedup 和 domain 结果。DSpark 的关键目标是在严格交互约束下避免低置信度 token 占用验证 batch。
+
+- **局限：** confidence scheduling 依赖 serving engine 的吞吐曲线和线上流量分布。换模型、换 batch regime 或换推理后端时，prefix survival model 和验证长度策略都需要重新校准。
+
+### 9.4 DDTree: Accelerating Speculative Decoding with Block Diffusion Draft Trees
+
+`DDTree` 基于 `DFlash`。DFlash 的 block diffusion drafter 可以一次 forward 生成整个 draft block，但 vanilla DFlash 每轮只验证一条 trajectory。DDTree 把 block diffusion 每个位置的分布直接组织成 draft tree。
+
+- **核心方法：** 在固定 node budget 下，DDTree 用 best-first heap algorithm 选择最可能被目标模型接受的 continuation。构造出的树用 ancestor-only attention mask 在一次 target model forward 中验证。
+
+![DDTree 从 DFlash 分布构造 draft tree](./png/ddtree-draft-tree.png)
+
+图中展示了从 block diffusion 输出到 draft tree 的变化。每个节点的分数来自 draft distribution 的 surrogate，树结构保留祖先依赖，验证时 attention mask 只允许节点看自己的 ancestor。
+
+- **实验结果：** 论文在 Qwen3-4B、Qwen3-8B、Qwen3-30B-MoE 上测试 MATH-500、GSM8K、AIME、HumanEval、LiveCodeBench、SWE-bench Lite 等任务。摘要图中 DFlash+DDTree 相对自回归解码最高到 `8.2x`，多个任务在 `4x-8x` 区间。
+
+![DDTree 相对自回归解码的 speedup](./png/ddtree-speedup.png)
+
+图中每个 dataset-model pair 使用各自最优 tree-node budget。DDTree 的收益来自把 DFlash 的并行 block 分布转成多路径验证，而不是重新训练一个自回归 drafter。
+
+- **局限：** 节点选择依赖 draft model 定义的 surrogate。若 diffusion drafter 的边际分布和目标模型路径概率偏差大，tree budget 会被分配到看似高分但目标模型不接受的路径上。
+
+### 9.5 D-Cut: 让 DFlash 在高并发 serving 里少验证低价值 token
+
+`D-Cut` 是 AngelSlim 文档里的 DFlash 优化方案，重点是 high-throughput serving，而不是单请求离线 benchmark。它把 DFlash 的固定长度验证改成硬件感知的动态截断。
+
+- **核心问题：** DFlash-B16 在小 batch 下可以加速，但 batch 很大时，目标模型验证 16 个 token 会显著增加 `prefill-like` 验证成本。文档给出的 Qwen3-8B、H20、TP1、`bs=64` 设置下，full verify 约 `133.9ms`，只验证 `25%` token 时约 `55.2ms`。
+
+- **核心方法：** D-Cut 用硬件驱动的代价模型估计当前 batch 下验证不同 token 数的成本，再用全局跨请求 top-K 选择最值得验证的 draft token。token score 使用 prefix product，低概率后缀会被提前剪掉；实现上配合 CUDA graph bucket，避免动态长度导致 kernel launch 失控。
+
+- **实验结果：** 文档中的 Qwen3-8B serving 表显示，`DFlash-B16` 在 `bs=64` 时相对 AR 只有 `0.42x`，`D-Cut-B16` 提升到 `0.81x`，`D-Cut-B8` 到 `0.92x`。在 Qwen3.5-35B-A3B 的表中，`D-Cut-B16` 的 geo mean speedup 为 `2.83x`，高于 `DFlash-B16` 的 `2.62x` 和 `MTP` 的 `2.00x`。
+
+- **局限：** D-Cut 是工程文档方案，当前没有论文 PDF 图可抽取。方法收益依赖 batch size、硬件、CUDA graph bucket 和 draft 分布校准；低并发或 verification 很便宜的场景下，剪枝收益会变小。
+
+## 10. 总结
 
 
 ---
@@ -167,4 +249,8 @@ $$\mathcal{L} = \mathcal{L}_{reg} + w_{cls} \cdot \mathcal{L}_{cls}$$
 7. Kumar et al., "Speculative Speculative Decoding", 2026
 8. Williams et al., "Speculative Decoding with a Speculative Vocabulary", 2026
 9. Zhang et al., "Draft Model Knows When to Stop: Self-Verification Speculative Decoding for Long-Form Generation", EMNLP 2024
-4
+10. Huang et al., "Domino: Decoupling Causal Modeling from Autoregressive Drafting in Speculative Decoding", arXiv 2026, https://arxiv.org/abs/2605.29707
+11. Hu et al., "JETSPEC: Breaking the Scaling Ceiling of Speculative Decoding with Parallel Tree Drafting", arXiv 2026, https://arxiv.org/abs/2606.18394
+12. Cheng et al., "DSpark: Confidence-Scheduled Speculative Decoding with Semi-Autoregressive Generation", arXiv 2026, https://arxiv.org/abs/2607.05147
+13. Ringel and Romano, "Accelerating Speculative Decoding with Block Diffusion Draft Trees", arXiv 2026, https://arxiv.org/abs/2604.12989
+14. AngelSlim, "D-Cut", documentation, https://angelslim.readthedocs.io/zh-cn/latest/dcut.html
