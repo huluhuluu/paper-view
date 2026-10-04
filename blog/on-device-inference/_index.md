@@ -53,7 +53,7 @@ categories: ["paper"]
 
 ### 2.1 llm.npu
 
-[Fast On-device LLM Inference with NPUs](/p/asplos25-npu-llm/) 研究如何把 prefill 主路径放到移动 `NPU`。
+[Fast On-device LLM Inference with NPUs](asplos25-npu-llm/index.md) 研究如何把 prefill 主路径放到移动 `NPU`。
 
 * **核心问题：** 论文测到移动 `CPU` 上 prefill 占端到端延迟 `88.3%-98.8%`，移动 `GPU` 上为 `54.2%-91.7%`。长 prompt 下不能只优化 decode。
 
@@ -77,7 +77,7 @@ categories: ["paper"]
 
 ### 2.3 MobileQuant
 
-[MobileQuant](/p/mobilequant/) 研究移动端可部署的 weight-activation quantization。
+[MobileQuant](mobilequant/index.md) 研究移动端可部署的 weight-activation quantization。
 
 * **核心问题：** weight-only 量化仍需要浮点计算和 on-the-fly dequantization；动态 per-token activation quantization 缺少移动 `NPU/DSP` 支持。
 

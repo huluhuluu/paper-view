@@ -42,9 +42,9 @@ math: true
 | 端侧推理总览 | 端侧 LLM 的存储、稀疏、NPU、调度与 benchmark 视角 | ✅ 完成 | [传送门](/post/on-device-inference/) |
 | LLM in a Flash | 闪存作为权重缓存，解决“模型放不下” | ✅ 完成 | [传送门](/p/llm-in-flash-ssd/) |
 | PowerInfer-2 | 神经元稀疏 + 动态权重加载 | ✅ 完成 | [传送门](/p/powerinfer2-smartphone/) |
-| Fast On-device LLM Inference with NPUs | NPU-first 路线与指令级融合 | ✅ 已完成 | [传送门](/p/asplos25-npu-llm/) |
+| Fast On-device LLM Inference with NPUs | NPU-first 路线与指令级融合 | ✅ 已完成 | [传送门](blog/on-device-inference/asplos25-npu-llm/index.md) |
 | shadowAttn | 面向 Mobile SoC 的动态稀疏注意力 | ✅ 完成 | [传送门](/p/dynamic-sparse-attention/) |
-| MobileQuant | 面向移动 NPU/DSP 的 W/A integer-only 量化 | ✅ 完成 | [传送门](/p/mobilequant/) |
+| MobileQuant | 面向移动 NPU/DSP 的 W/A integer-only 量化 | ✅ 完成 | [传送门](blog/on-device-inference/mobilequant/index.md) |
 | HeteroLLM | CPU/GPU/NPU 异构切分与协同 | ✅ 完成 | [传送门](/p/heterollm-soc/) |
 | Agent.xpu | Agent 工作负载的 SoC 调度 | ✅ 完成 | [传送门](/p/agent-xpu-scheduling/) |
 | LLM Inference at the Edge | NPU 与 GPU 的移动端 benchmark | ✅ 完成 | [传送门](/p/llm-inference-edge/) |
